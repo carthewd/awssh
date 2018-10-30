@@ -1,0 +1,112 @@
+#!/bin/bash
+
+source ~/awssh.conf
+
+usage() {
+  echo "Usage: ${0} [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id>"
+  echo "-r region"
+  echo "-u SSH username"
+  echo "-k path to private key"
+  echo "-b bastion host specified"
+  echo "-B bastion host configured with env variable or via awssh.conf"
+  echo
+  echo "Default values can be sourced from ~/awssh.conf"
+  echo
+}
+
+if [[ ${#1} == 2 ]]; then
+  OPTIND=1
+  instance_id=${!#}
+else
+  OPTIND=2
+  instance_id=$1
+fi
+
+while getopts "h?:r:k:u:pb:B" opt; do
+    case "$opt" in
+    h|\?)
+        usage
+        exit 0
+        ;;
+    r)  region=$OPTARG
+        ;;
+    k)  private_key=$OPTARG
+        ;;
+    u)  ssh_user=$OPTARG
+        ;;
+    p)  private_ip=1
+        ;;
+    b)  bastion=$OPTARG
+        ;;
+    B)  bastion=${bastion_host}
+        ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+elif [[ -z ${region} ]]; then
+  usage
+  exit 1
+elif [[  -z ${ssh_user} ]]; then
+  ssh_user='ec2-user'
+fi
+
+if [[ -z ${private_ip} ]]; then
+  my_ip=$(curl 'https://api.ipify.org?format=json' -s | jq .'ip' | sed s/\"//g)
+fi
+
+if [[ ${instance_id} =~ ^i-[a-zA-Z0-9]{17}$ || ${instance_id} =~ ^i-[a-zA-Z0-9]{8}$ ]]; then
+  if [[ ${private_ip} == 1 ]]; then
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId}')
+  else
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId}')
+  fi
+else
+  if [[ ${private_ip} ]]; then
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId}')
+  else
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId}')
+  fi
+fi
+
+if [[ "${instance_info}" == "[]" ]]; then
+  echo ${instance_info}
+  echo "ERR: Invalid region or instance ID."
+  usage
+  exit 1
+fi
+
+ip=$(echo ${instance_info} | jq .[].IP | sed 's/"//g')
+sg=$(echo ${instance_info} | jq .[].SG | sed 's/"//g')
+
+if [[ ${ip} == "null" ]]; then
+  echo "ERR: IP returned null - is instance stopped or requires a bastion? "
+  exit 1
+fi 
+
+if [[ -z ${private_ip} ]]; then
+  aws ec2 authorize-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}
+
+  trap "aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}" 1 2 3 15
+fi
+
+ssh_cmd="ssh ${ssh_user}@${ip}"
+
+if [[ ${private_key} ]]; then
+  ssh_cmd+=" -i ${private_key}"
+  priv_key_prefix="-i"
+fi
+
+if [[ ${bastion} ]]; then
+ ssh_cmd+=" -o \"proxycommand ssh -W %h:%p ${priv_key_prefix} ${private_key} ${ssh_user}@${bastion}\""
+fi
+echo $ssh_cmd
+ssh-keyscan ${ip} >> ~/.ssh/known_hosts 2> /dev/null
+
+eval ${ssh_cmd}
+
+if [[ -z ${private_ip} ]]; then
+  aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}
+fi
