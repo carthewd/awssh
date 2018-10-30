@@ -72,7 +72,6 @@ else
 fi
 
 if [[ "${instance_info}" == "[]" ]]; then
-  echo ${instance_info}
   echo "ERR: Invalid region or instance ID."
   usage
   exit 1
@@ -102,7 +101,6 @@ fi
 if [[ ${bastion} ]]; then
  ssh_cmd+=" -o \"proxycommand ssh -W %h:%p ${priv_key_prefix} ${private_key} ${ssh_user}@${bastion}\""
 fi
-echo $ssh_cmd
 ssh-keyscan ${ip} >> ~/.ssh/known_hosts 2> /dev/null
 
 eval ${ssh_cmd}
