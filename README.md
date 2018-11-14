@@ -12,12 +12,15 @@ A very simply SSH wrapper aimed at making it easier to connect to AWS EC2 instan
 2. jq
 
 ## Usage
-Usage: awssh [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id>
+Usage: /usr/local/bin/awssh [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id|list>
 -r region
 -u SSH username
 -k path to private key
 -b bastion host specified
 -B bastion host configured with env variable or via awssh.conf
+-P AWS CLI profile to use - defaults to default
+
+list will provide a tabulated list of name|instance ID|region for the given parameters
 
 Default values can be sourced from ~/awssh.conf
 

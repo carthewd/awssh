@@ -3,15 +3,24 @@
 source ~/awssh.conf
 
 usage() {
-  echo "Usage: ${0} [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id>"
+  echo "Usage: ${0} [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id|list>"
   echo "-r region"
   echo "-u SSH username"
   echo "-k path to private key"
   echo "-b bastion host specified"
   echo "-B bastion host configured with env variable or via awssh.conf"
+  echo "-P AWS CLI profile to use - defaults to default"
+  echo
+  echo "list will provide a tabulated list of name|instance ID|region for the given parameters"
   echo
   echo "Default values can be sourced from ~/awssh.conf"
   echo
+}
+
+show_instances() {
+  tmp_region=$2
+  aws ec2 describe-instances --profile $1 --region $2 --filter "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].[Tags[?Key==`Name`].Value[],InstanceId]' \
+  --output text | sed 's/None$/None\n/' | sed '$!N;s/\n/ /' | awk '{ print $2 ,"\t",$1,"\t","'$tmp_region'" }' | column -s $'\t' -t
 }
 
 if [[ ${#1} == 2 ]]; then
@@ -22,7 +31,7 @@ else
   instance_id=$1
 fi
 
-while getopts "h?:r:k:u:pb:B" opt; do
+while getopts "h?:r:k:u:pb:B:P:" opt; do
     case "$opt" in
     h|\?)
         usage
@@ -40,6 +49,8 @@ while getopts "h?:r:k:u:pb:B" opt; do
         ;;
     B)  bastion=${bastion_host}
         ;;
+    P)  profile=$OPTARG
+        ;;
     esac
 done
 
@@ -49,8 +60,18 @@ if [[ $# -eq 0 ]]; then
 elif [[ -z ${region} ]]; then
   usage
   exit 1
-elif [[  -z ${ssh_user} ]]; then
+elif [[ -z ${ssh_user} ]]; then
   ssh_user='ec2-user'
+fi
+
+if [[ -z ${profile} ]]; then
+  profile='default'
+fi
+
+
+if [[ ${instance_id} == "list" ]]; then
+  show_instances ${profile} ${region}
+  exit 0
 fi
 
 if [[ -z ${private_ip} ]]; then
@@ -59,15 +80,15 @@ fi
 
 if [[ ${instance_id} =~ ^i-[a-zA-Z0-9]{17}$ || ${instance_id} =~ ^i-[a-zA-Z0-9]{8}$ ]]; then
   if [[ ${private_ip} == 1 ]]; then
-    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId}')
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --profile ${profile} --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId, STATUS:State.Name}')
   else
-    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId}')
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=instance-id,Values=${instance_id}" --profile ${profile} --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId, STATUS:State.Name}')
   fi
 else
   if [[ ${private_ip} ]]; then
-    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId}')
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --profile ${profile} --query 'Reservations[].Instances[0].{IP:PrivateIpAddress, SG:SecurityGroups[0].GroupId, STATUS:State.Name}')
   else
-    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId}')
+    instance_info=$(aws ec2 describe-instances --region ${region} --filter "Name=tag:Name,Values=${instance_id}" --profile ${profile} --query 'Reservations[].Instances[0].{IP:PublicIpAddress, SG:SecurityGroups[0].GroupId, STATUS:State.Name}')
   fi
 fi
 
@@ -76,19 +97,22 @@ if [[ "${instance_info}" == "[]" ]]; then
   usage
   exit 1
 fi
-
+status=$(echo ${instance_info} | jq .[].STATUS | sed 's/"//g')
 ip=$(echo ${instance_info} | jq .[].IP | sed 's/"//g')
 sg=$(echo ${instance_info} | jq .[].SG | sed 's/"//g')
 
 if [[ ${ip} == "null" ]]; then
   echo "ERR: IP returned null - is instance stopped or requires a bastion? "
   exit 1
+elif [[ ${status} -ne "running" ]]; then
+  echo "ERR: Instance appears to not be running. "
+  exit 1
 fi 
 
 if [[ -z ${private_ip} ]]; then
-  aws ec2 authorize-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}
+  aws ec2 authorize-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --profile ${profile} --region ${region}
 
-  trap "aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}" 1 2 3 15
+  trap "aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --profile ${profile} --region ${region}" 1 2 3 15
 fi
 
 ssh_cmd="ssh ${ssh_user}@${ip}"
@@ -106,5 +130,5 @@ ssh-keyscan ${ip} >> ~/.ssh/known_hosts 2> /dev/null
 eval ${ssh_cmd}
 
 if [[ -z ${private_ip} ]]; then
-  aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --region ${region}
+  aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr ${my_ip}/32 --profile ${profile} --region ${region}
 fi
