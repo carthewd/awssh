@@ -10,6 +10,7 @@ usage() {
   echo "-b bastion host specified"
   echo "-B bastion host configured with env variable or via awssh.conf"
   echo "-P AWS CLI profile to use - defaults to default"
+  echo "-c command to execute"
   echo
   echo "list will provide a tabulated list of name|instance ID|region for the given parameters"
   echo
@@ -19,8 +20,8 @@ usage() {
 
 show_instances() {
   tmp_region=$2
-  aws ec2 describe-instances --profile $1 --region $2 --filter "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].[Tags[?Key==`Name`].Value[],InstanceId]' \
-  --output text | sed 's/None$/None\n/' | sed '$!N;s/\n/ /' | awk '{ print $2 ,"\t",$1,"\t","'$tmp_region'" }' | column -s $'\t' -t
+  aws ec2 describe-instances --profile $1 --region $2 --filter "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].[Tags[?Key==`Name`].Value[],InstanceId,InstanceType]' \
+  --output text | sed 's/None$/None\n/' | sed '$!N;s/\n/ /' | awk '{ print $3 ,"\t",$1,"\t",$2,"\t","'$tmp_region'" }' | column -s $'\t' -t
 }
 
 if [[ ${#1} == 2 ]]; then
@@ -31,7 +32,7 @@ else
   instance_id=$1
 fi
 
-while getopts "h?:r:k:u:pb:B:P:" opt; do
+while getopts "h?:r:k:u:pb:B:P:c:" opt; do
     case "$opt" in
     h|\?)
         usage
@@ -50,6 +51,8 @@ while getopts "h?:r:k:u:pb:B:P:" opt; do
     B)  bastion=${bastion_host}
         ;;
     P)  profile=$OPTARG
+        ;;
+    c)  command=$OPTARG
         ;;
     esac
 done
@@ -127,6 +130,7 @@ if [[ ${bastion} ]]; then
 fi
 ssh-keyscan ${ip} >> ~/.ssh/known_hosts 2> /dev/null
 
+ssh_cmd+=" ${command}"
 eval ${ssh_cmd}
 
 if [[ -z ${private_ip} ]]; then

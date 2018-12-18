@@ -19,6 +19,7 @@ Usage: /usr/local/bin/awssh [-r region_name] [-u ssh_user] [-k private key name]
 -b bastion host specified
 -B bastion host configured with env variable or via awssh.conf
 -P AWS CLI profile to use - defaults to default
+-c command to execute
 
 list will provide a tabulated list of name|instance ID|region for the given parameters
 
