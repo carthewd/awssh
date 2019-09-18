@@ -1,6 +1,8 @@
 #!/bin/bash
 
-source ~/awssh.conf
+if [[ -f ~/awssh.conf ]]; then
+  source ~/awssh.conf
+fi
 
 usage() {
   echo "Usage: ${0} [-r region_name] [-u ssh_user] [-k private key name] [-p private IP] [-b <bastion>] [-B] <instance name|id|list>"
